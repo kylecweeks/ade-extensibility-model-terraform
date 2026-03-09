@@ -5,7 +5,7 @@
 
 set -e # exit on error
 
-EnvironmentState="$ADE_STORAGE/environment.tfstate"
+# EnvironmentState="$ADE_STORAGE/environment.tfstate"
 EnvironmentPlan="/environment.tfplan"
 EnvironmentVars="/environment.tfvars.json"
 
@@ -20,8 +20,22 @@ export ARM_SUBSCRIPTION_ID=$ADE_SUBSCRIPTION_ID
 echo -e "\n>>> Terraform Info...\n"
 terraform -version
 
+## Kyle messing around here
+KV_NAME=$(jq -r '.key_vault_name' $EnvironmentVars)
+KV_SUB=$(jq -r '.key_vault_sub' $EnvironmentVars)
+
+STORAGE_KEY=$(az keyvault secret show --name "storage-key" --vault-name "$KV_NAME" --subscription "$KV_SUB" --query value -o tsv)
+STORAGE_ACCOUNT=$(az keyvault secret show --name "storage-account-name" --vault-name "$KV_NAME" --subscription "$KV_SUB" --query value -o tsv)
+BACKEND_RG=$(az keyvault secret show --name "backend-rg" --vault-name "$KV_NAME" --subscription "$KV_SUB" --query value -o tsv)
+CONTAINER=$(az keyvault secret show --name "container-name" --vault-name "$KV_NAME" --subscription "$KV_SUB" --query value -o tsv)
+STATE_KEY="${ADE_ENVIRONMENT_NAME}.tfstate"
+
+
 echo -e "\n>>> Initializing Terraform...\n"
-terraform init -no-color
+terraform init -no-color -backend-config="storage_account_name=$STORAGE_ACCOUNT" \
+               -backend-config="container_name=$CONTAINER" \
+               -backend-config="key=$STATE_KEY" \
+               -backend-config="resource_group_name=$BACKEND_RG"
 
 echo -e "\n>>> Creating Terraform Plan...\n"
 export TF_VAR_resource_group_name=$ADE_RESOURCE_GROUP_NAME
@@ -31,10 +45,10 @@ export TF_VAR_ade_subscription=$ADE_SUBSCRIPTION_ID
 export TF_VAR_ade_location=$ADE_ENVIRONMENT_LOCATION
 export TF_VAR_ade_environment_type=$ADE_ENVIRONMENT_TYPE
 
-terraform plan -no-color -compact-warnings -refresh=true -lock=true -state=$EnvironmentState -out=$EnvironmentPlan -var-file="$EnvironmentVars"
+terraform plan -no-color -compact-warnings -refresh=true -lock=true -out=$EnvironmentPlan -var-file="$EnvironmentVars"
 
 echo -e "\n>>> Applying Terraform Plan...\n"
-terraform apply -no-color -compact-warnings -auto-approve -lock=true -state=$EnvironmentState $EnvironmentPlan
+terraform apply -no-color -compact-warnings -auto-approve -lock=true $EnvironmentPlan
 
 # Outputs must be written to a specific file location.
 # ADE expects data types array, boolean, number, object and string.
@@ -44,20 +58,20 @@ echo -e "\n>>> Generating outputs for ADE...\n"
 tfout="$(terraform output -state=$EnvironmentState -json)"
 
 # Convert Terraform output format to our internal format.
-tfout=$(jq 'walk(if type == "object" then 
-            if .type == "bool" then .type = "boolean" 
-            elif .type == "list" then .type = "array" 
-            elif .type == "map" then .type = "object" 
-            elif .type == "set" then .type = "array" 
-            elif (.type | type) == "array" then 
-                if .type[0] == "tuple" then .type = "array" 
-                elif .type[0] == "object" then .type = "object" 
-                elif .type[0] == "set" then .type = "array" 
-                else . 
-                end 
-            else . 
-            end 
-        else . 
+tfout=$(jq 'walk(if type == "object" then
+            if .type == "bool" then .type = "boolean"
+            elif .type == "list" then .type = "array"
+            elif .type == "map" then .type = "object"
+            elif .type == "set" then .type = "array"
+            elif (.type | type) == "array" then
+                if .type[0] == "tuple" then .type = "array"
+                elif .type[0] == "object" then .type = "object"
+                elif .type[0] == "set" then .type = "array"
+                else .
+                end
+            else .
+            end
+        else .
         end)' <<< "$tfout")
 
 echo "{\"outputs\": $tfout}" > $ADE_OUTPUTS
